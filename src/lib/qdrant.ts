@@ -2,7 +2,14 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import type { AppConfig } from "./config";
 
 export function getQdrantClient(cfg: AppConfig) {
-  return new QdrantClient({ url: cfg.qdrantUrl, apiKey: cfg.qdrantApiKey });
+  return new QdrantClient({
+    url: cfg.qdrantUrl,
+    apiKey: cfg.qdrantApiKey,
+    // Avoid version fetch on startup which can fail on some networks
+    checkCompatibility: false,
+    // Increase network timeout for cloud clusters
+    timeout: 30000,
+  });
 }
 
 export async function ensureCollection(opts: {

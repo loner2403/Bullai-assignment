@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "ingest": "tsx scripts/ingest.ts"
+    "ingest": "tsx scripts/ingest.ts",
+    "inspect:qdrant": "tsx scripts/inspect-qdrant.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -19,7 +20,9 @@
     "next": "15.4.6",
     "pdf-parse": "^1.1.1",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

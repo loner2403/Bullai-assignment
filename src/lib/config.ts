@@ -6,6 +6,8 @@ export type AppConfig = {
   embeddingsModel: string;
   llmProvider: "gemini" | "deepseek";
   llmModel: string;
+  llmProviderChart?: "gemini" | "deepseek";
+  llmModelChart?: string;
   googleApiKey?: string;
   jinaApiKey?: string;
   deepseekApiKey?: string;
@@ -20,6 +22,8 @@ export function loadConfig(): AppConfig {
     embeddingsModel: process.env.EMBEDDINGS_MODEL || "text-embedding-004",
     llmProvider: (process.env.LLM_PROVIDER as any) || "gemini",
     llmModel: process.env.LLM_MODEL || "gemini-1.5-flash",
+    llmProviderChart: (process.env.LLM_PROVIDER_CHART as any) || undefined,
+    llmModelChart: process.env.LLM_MODEL_CHART || undefined,
     googleApiKey: process.env.GOOGLE_API_KEY,
     jinaApiKey: process.env.JINA_API_KEY,
     deepseekApiKey: process.env.DEEPSEEK_API_KEY,

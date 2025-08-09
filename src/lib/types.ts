@@ -11,10 +11,11 @@ export type Source = {
 };
 
 export type ChartSpec = {
-  type?: "line" | "bar" | "scatter";
+  type?: "line" | "bar" | "scatter" | "pie";
   labels: string[];
   series: { name: string; values: number[]; color?: string }[];
   unit?: string;
+  stacked?: boolean;
 };
 
 export type AnswerResponse = {
