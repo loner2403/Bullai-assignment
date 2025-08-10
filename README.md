@@ -1,25 +1,3 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
-
-## Getting Started
-
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
 ## Chatbot Vector DB (RAG over PDFs)
 
 This app lets you ask questions about a set of PDF documents and get grounded, cited answers. In short: we chop PDFs into smart chunks, store them in a vector database (Qdrant), search the most relevant pieces for your question, and have an LLM write a concise answer with sources. If your question is chart-like, we also try to derive a small chart config to render.
@@ -110,17 +88,12 @@ The UI sends messages to `/api/chat`, streams back the answer, shows sources, an
 - `web/src/components/ChatLayout.tsx` — chat UI
 
 ### Notes & limitations
-- OCR is not included; image‑only PDFs won’t yield text (ingestion warns and skips).
-- Slide/text detection is heuristic; you can force `--strategy perpage`.
+- OCR is not included, image‑only PDFs won’t yield text (ingestion warns and skips).
+- Slide/text detection is heuristic, you can force `--strategy perpage`.
 - Chart extraction is best‑effort and may not trigger for all queries.
-- Only Google embeddings are supported (Jina removed).
+
 
 ### Troubleshooting
 - Dimension mismatch error: ensure `EMBEDDINGS_MODEL` at query time matches the model used for ingestion, or re‑ingest into a new collection, or point `QDRANT_COLLECTION` to the correct one.
 - Qdrant/network timeouts: verify credentials, region, and connectivity; try smaller `--upsertBatch`.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
