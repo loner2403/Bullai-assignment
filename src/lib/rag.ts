@@ -245,11 +245,6 @@ async function callDeepSeek(modelName: string, apiKey: string, prompt: string) {
   return data?.choices?.[0]?.message?.content ?? "";
 }
 
-function isRateLimitError(e: any): boolean {
-  const msg = String(e?.message || e || "").toLowerCase();
-  return msg.includes("429") || msg.includes("rate limit") || msg.includes("too many requests");
-}
-
 async function getAnswerWithFallback(
   cfg: ReturnType<typeof loadConfig>,
   prompt: string
@@ -284,10 +279,8 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
   const cfg = loadConfig();
 
   const embeddings = getEmbeddings({
-    provider: cfg.embeddingsProvider,
     model: cfg.embeddingsModel,
     googleApiKey: cfg.googleApiKey,
-    jinaApiKey: cfg.jinaApiKey,
   });
   const qvec = await embeddings.embedQuery(question);
 
@@ -307,7 +300,7 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
     if (expected && expected !== qvec.length) {
       throw new Error(
         `Embedding dimension (${qvec.length}) does not match Qdrant collection '${cfg.qdrantCollection}' vector size (${expected}). ` +
-          `Make sure EMBEDDINGS_PROVIDER/EMBEDDINGS_MODEL match the model used for ingestion, or re-ingest into this collection, ` +
+          `Make sure EMBEDDINGS_MODEL matches the model used for ingestion, or re-ingest into this collection, ` +
           `or set QDRANT_COLLECTION to the correct one.`
       );
     }

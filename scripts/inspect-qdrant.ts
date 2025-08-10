@@ -87,11 +87,14 @@ async function main() {
   const points = sc.points || sc.result || [];
   const rows = points.map((p: any) => ({
     id: p.id,
+    path: p.payload?.path,
     title: p.payload?.title,
     company: p.payload?.company,
     doc_type: p.payload?.doc_type,
     published_date: p.payload?.published_date,
     chunk_index: p.payload?.chunk_index,
+    page_start: p.payload?.page_start,
+    page_end: p.payload?.page_end,
     text: showText ? truncate(p.payload?.text) : undefined,
   }));
   console.table(rows);

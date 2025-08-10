@@ -5,7 +5,7 @@
    npm run ingest -- --path "../Technical task"
  Env (see env.example):
    QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION
-   EMBEDDINGS_PROVIDER, EMBEDDINGS_MODEL, GOOGLE_API_KEY | JINA_API_KEY
+   EMBEDDINGS_MODEL, GOOGLE_API_KEY
 */
 import fs from "node:fs";
 import path from "node:path";
@@ -14,6 +14,7 @@ import pdf from "pdf-parse";
 import { getQdrantClient, ensureCollection } from "../src/lib/qdrant";
 import { getEmbeddings } from "../src/lib/embeddings";
 import { loadConfig } from "../src/lib/config";
+import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -48,27 +49,87 @@ function walk(targetPath: string, filterExt = [".pdf"]): string[] {
   return out;
 }
 
-function* chunkTextGen(text: string, chunkSize = 1200, overlap = 200): Generator<{ text: string; index: number }> {
-  const clean = text.replace(/\u0000/g, "\n").replace(/\n{3,}/g, "\n\n");
-  const step = Math.max(1, chunkSize - overlap);
-  let start = 0;
-  let idx = 0;
-  while (start < clean.length) {
-    const end = Math.min(start + chunkSize, clean.length);
-    const slice = clean.slice(start, end);
-    yield { text: slice, index: idx++ };
-    if (end >= clean.length) break; // reached end
-    start += step;
-  }
-}
-
 function normalizeText(t: string) {
   // Remove zero-width chars, normalize whitespace, collapse long repeats
   return t
     .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .replace(/\s+/g, " ")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ") // keep newlines, squash spaces/tabs only
+    .replace(/\n{3,}/g, "\n\n")
     .replace(/([\-=_])\1{3,}/g, "$1$1$1")
     .trim();
+}
+
+// Group PDF.js text items into lines using Y-coordinate deltas and hasEOL hints.
+function linesFromTextContent(content: any) {
+  const items = (content?.items || []) as Array<{
+    str: string;
+    transform?: number[];
+    hasEOL?: boolean;
+  }>;
+  const lines: string[] = [];
+  let cur: string[] = [];
+  let prevY: number | null = null;
+  const yThresh = 3; // px threshold to detect new line
+  for (const it of items) {
+    const y = Array.isArray(it.transform) && it.transform.length >= 6 ? Number(it.transform[5]) : NaN;
+    if (cur.length === 0) {
+      cur.push(it.str);
+      prevY = y;
+    } else {
+      const newLine = Number.isFinite(y) && Number.isFinite(prevY!) ? Math.abs(y - (prevY as number)) > yThresh : false;
+      if (newLine || it.hasEOL) {
+        lines.push(cur.join(" ").trim());
+        cur = [it.str];
+        prevY = y;
+      } else {
+        cur.push(it.str);
+        if (Number.isFinite(y)) prevY = y; // update baseline slowly
+      }
+    }
+  }
+  if (cur.length > 0) lines.push(cur.join(" ").trim());
+  // Clean lines and drop empties
+  const cleanLines = lines.map((l) => normalizeText(l)).filter((l) => l.length > 0);
+  const totalChars = cleanLines.reduce((a, b) => a + b.length, 0);
+  const bulletLines = cleanLines.filter((l) => /^([•\-*–—·]\s+)/.test(l)).length;
+  const avgLineLen = cleanLines.length ? totalChars / cleanLines.length : 0;
+  return { text: normalizeText(cleanLines.join("\n")), lines: cleanLines, stats: { bulletLines, avgLineLen, totalChars } };
+}
+
+function detectPageType(stats: { bulletLines: number; avgLineLen: number; totalChars: number }) {
+  // Heuristics: low total chars, short lines, bullets => likely slide
+  const slideByChars = stats.totalChars <= 800; // default threshold
+  const slideByBullets = stats.bulletLines >= 2 && stats.bulletLines / Math.max(1, stats.totalChars / 200) > 0.05; // rough density
+  const slideByAvgLen = stats.avgLineLen > 0 && stats.avgLineLen < 60;
+  const isSlide = slideByChars || slideByBullets || slideByAvgLen;
+  return isSlide ? "slide" : "text";
+}
+
+function pickHeading(lines: string[]): string | null {
+  if (!lines || lines.length === 0) return null;
+  const candidates = lines.slice(0, Math.min(2, lines.length));
+  const score = (s: string) => {
+    const len = s.length;
+    if (len === 0 || len > 80) return 0;
+    const letters = s.replace(/[^A-Za-z]/g, "");
+    const upper = letters.replace(/[a-z]/g, "");
+    const upperRatio = letters.length ? upper.length / letters.length : 0;
+    const hasPunct = /[.;:!?]$/.test(s);
+    const looksBullet = /^([•\-*–—·]\s+)/.test(s);
+    // prefer short, upper-ish, non-bullet, no sentence punctuation
+    return (1 - len / 80) + upperRatio * 0.7 + (hasPunct ? -0.6 : 0.2) + (looksBullet ? -0.8 : 0);
+  };
+  let best = "";
+  let bestScore = -Infinity;
+  for (const c of candidates) {
+    const sc = score(c);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = c;
+    }
+  }
+  return bestScore > 0 ? best : null;
 }
 
 function fileMetaFromName(fp: string) {
@@ -102,13 +163,11 @@ async function main() {
     console.log("No PDFs found to ingest.");
     return;
   }
-  console.log(`Found ${files.length} PDF(s). Embedding model: ${cfg.embeddingsProvider}:${cfg.embeddingsModel}`);
+  console.log(`Found ${files.length} PDF(s). Embedding model: ${cfg.embeddingsModel}`);
 
   const embeddings = getEmbeddings({
-    provider: cfg.embeddingsProvider,
     model: cfg.embeddingsModel,
     googleApiKey: cfg.googleApiKey,
-    jinaApiKey: cfg.jinaApiKey,
   });
 
   // Determine vector size by probing one embedding
@@ -130,6 +189,9 @@ async function main() {
     const logPages = String(args.logPages || "0").toLowerCase() === "1" || String(args.logPages || "").toLowerCase() === "true";
     const dedupeWindow = Number(args.dedupeWindow) || 20000; // max hashes kept before resetting
     const perPage = String(args.perPage || "0").toLowerCase() === "1" || String(args.perPage || "").toLowerCase() === "true";
+    const strategy = ((args.strategy as string) || "auto").toLowerCase() as "auto" | "recursive" | "perpage" | "semantic";
+    const detectSlides = String(args.detectSlides || "1").toLowerCase() === "1" || String(args.detectSlides || "").toLowerCase() === "true";
+    const headerPrefix = String(args.headerPrefix || "1").toLowerCase() === "1" || String(args.headerPrefix || "").toLowerCase() === "true";
     const pageLimit = Number(args.pageLimit) || 0;
     const timeoutMs = Number(args.timeoutMs) || 30000;
 
@@ -137,7 +199,7 @@ async function main() {
 
     let processed = 0;
     let nextIndex = 0;
-    let pending: { text: string; index: number }[] = [];
+    let pending: { text: string; index: number; page_start?: number; page_end?: number }[] = [];
     const seen = new Set<string>(); // per-file dedupe
 
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -201,6 +263,8 @@ async function main() {
             path: path.relative(process.cwd(), file),
             chunk_index: c.index,
             text: c.text,
+            page_start: c.page_start,
+            page_end: c.page_end,
           },
         };
       });
@@ -221,33 +285,57 @@ async function main() {
             return "";
           }
           const content = await pageData.getTextContent();
-          const raw = (content.items || []).map((it: any) => it.str || "").join(" ");
-          const pageText = normalizeText(raw);
-          if (logPages) {
-            const pn = (pageData as any)?.pageNumber ?? "?";
-            console.log(`  Page ${pn}: chars=${pageText.length}`);
+          const { text: pageText0, lines, stats } = linesFromTextContent(content);
+          const pn = (pageData as any)?.pageNumber ?? pageCount + 1;
+          const mode = perPage
+            ? "perpage"
+            : strategy === "auto"
+            ? (detectSlides ? detectPageType(stats) : "text")
+            : strategy === "semantic"
+            ? "recursive"
+            : strategy; // normalize aliases
+          let pageText = pageText0;
+          let heading: string | null = null;
+          if (headerPrefix && mode !== "perpage") {
+            heading = pickHeading(lines);
+          } else if (headerPrefix && mode === "perpage") {
+            // even for per-page, try to capture a title line to prefix
+            heading = pickHeading(lines);
           }
-          if (perPage) {
-            const text = pageText;
-            if (text.length >= minChunkChars) {
+          if (logPages) {
+            console.log(`  Page ${pn}: chars=${pageText.length} mode=${mode}${heading ? " heading=\"" + heading + "\"" : ""}`);
+          }
+
+          if (mode === "perpage" || mode === "slide") {
+            const text = heading ? `${heading}\n\n${pageText}` : pageText;
+            if (text.length >= Math.min(80, minChunkChars)) {
               const h = crypto.createHash("md5").update(text).digest("hex");
               if (!seen.has(h)) {
                 seen.add(h);
                 if (seen.size > dedupeWindow) seen.clear();
-                pending.push({ text, index: nextIndex++ });
+                pending.push({ text, index: nextIndex++, page_start: pn, page_end: pn });
                 if (pending.length >= batchSize) {
                   await flushPending();
                 }
               }
             }
           } else {
-            for (const c of chunkTextGen(pageText, chunkSize, overlap)) {
-              if (c.text.length < minChunkChars) continue;
-              const h = crypto.createHash("md5").update(c.text).digest("hex");
+            // Recursive splitter with layout-aware separators
+            const splitter = new RecursiveCharacterTextSplitter({
+              chunkSize,
+              chunkOverlap: overlap,
+              separators: ["\n\n", "\n• ", "\n- ", "\n– ", "\n— ", "\n", ". ", "; ", " "],
+            });
+            const base = heading ? `${heading}\n\n${pageText}` : pageText;
+            const chunks = await splitter.splitText(base);
+            for (const t of chunks) {
+              const text = normalizeText(t);
+              if (text.length < minChunkChars) continue;
+              const h = crypto.createHash("md5").update(text).digest("hex");
               if (seen.has(h)) continue;
               seen.add(h);
               if (seen.size > dedupeWindow) seen.clear();
-              pending.push({ text: c.text, index: nextIndex++ });
+              pending.push({ text, index: nextIndex++, page_start: pn, page_end: pn });
               if (pending.length >= batchSize) {
                 await flushPending();
               }
