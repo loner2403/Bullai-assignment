@@ -1,8 +1,30 @@
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Getting Started
+
+First, run the development server:
+
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
 ## Chatbot Vector DB (RAG over PDFs)
 
 This app lets you ask questions about a set of PDF documents and get grounded, cited answers. In short: we chop PDFs into smart chunks, store them in a vector database (Qdrant), search the most relevant pieces for your question, and have an LLM write a concise answer with sources. If your question is chart-like, we also try to derive a small chart config to render.
 
-### How it works (plain English)
+### How it works 
 - You drop PDFs into a folder.
 - We extract text page by page and split it into readable chunks. Slides stay per‑page; long documents get paragraph‑style chunks.
 - Every chunk becomes a vector (a numeric fingerprint) and is saved in Qdrant with metadata like file, page range, company, etc.
