@@ -285,6 +285,11 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
   const qvec = await embeddings.embedQuery(question);
 
   const client = getQdrantClient(cfg);
+  try {
+    console.info(
+      `Qdrant search setup: collection='${cfg.qdrantCollection}', qvec.length=${qvec.length}`
+    );
+  } catch {}
   // Validate collection vector size vs embedding dimension to avoid 400 errors
   try {
     const coll: any = await (client as any).getCollection(cfg.qdrantCollection);
@@ -296,6 +301,13 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
       // named vectors shape { name: { size, distance } }
       const first = Object.values(vectorsCfg as any)[0] as any;
       if (first && typeof first.size === "number") expected = first.size;
+    }
+    if (expected) {
+      try {
+        console.info(
+          `Qdrant collection '${cfg.qdrantCollection}' vector size=${expected}, qvec.length=${qvec.length}`
+        );
+      } catch {}
     }
     if (expected && expected !== qvec.length) {
       throw new Error(
@@ -324,6 +336,7 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
     : undefined;
 
   let searchRes: any[] = [];
+  let points: any[] = [];
   try {
     searchRes = (await client.search(cfg.qdrantCollection, {
       vector: qvec,
@@ -332,14 +345,33 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
       score_threshold: 0.2,
       filter,
     } as any)) as any[];
+    points = searchRes as any[];
   } catch (e: any) {
     const detail = e?.response?.data || e?.message || e;
-    console.error("Qdrant search error:", typeof detail === "object" ? JSON.stringify(detail) : String(detail));
-    throw e;
+    console.error(
+      "Qdrant search error (with filter):",
+      typeof detail === "object" ? JSON.stringify(detail) : String(detail)
+    );
+    // Fallback: retry without filter (some clusters may reject the filter shape depending on payload types)
+    try {
+      const fallback = (await client.search(cfg.qdrantCollection, {
+        vector: qvec,
+        limit: 16,
+        with_payload: true,
+        score_threshold: 0.2,
+      } as any)) as any[];
+      points = fallback as any[];
+    } catch (e2: any) {
+      const d2 = e2?.response?.data || e2?.message || e2;
+      console.error(
+        "Qdrant unfiltered search also failed:",
+        typeof d2 === "object" ? JSON.stringify(d2) : String(d2)
+      );
+      throw e; // surface original filtered error
+    }
   }
   // If the strict equality filter returns no hits (common when filenames vary),
   // retry without filter and then apply a soft company check on payload fields.
-  let points: any[] = searchRes as any[];
   if ((points?.length ?? 0) === 0 && opts.company) {
     try {
       const fallback = (await client.search(cfg.qdrantCollection, {

@@ -134,15 +134,43 @@ export async function POST(req: Request) {
       return new Response(xml, { status: 200, headers: { "Content-Type": "application/xml" } });
     }
 
-    // Optional: infer a simple company tag if user prefixes like "@Company: question" OR "Company: question"
+    // Optional: infer a company tag
+    // 1) Strict: "@Company: question"
+    // 2) Lenient: "Company: question" ONLY if the prefix doesn't look like chart verbs (plot/graph/chart/...)
+    // 3) Fallback: "... in <Company>, <question>"
     let question = body;
     let company: string | undefined = undefined;
-    const prefixed = /^\s*@?([^:\n]+):\s*(.*)$/i.exec(body);
-    if (prefixed) {
-      company = prefixed[1].trim();
-      question = prefixed[2].trim();
+    const atPrefix = /^\s*@([^:\n]+):\s*(.+)$/i.exec(body);
+    const genericPrefix = !atPrefix ? /^\s*([^:\n]+):\s*(.+)$/i.exec(body) : null;
+    const looksLikeCompany = (s: string) => {
+      const t = (s || "").trim();
+      if (!t) return false;
+      const lower = t.toLowerCase();
+      const bad = [
+        "plot",
+        "graph",
+        "chart",
+        "visual",
+        "visualize",
+        "visualise",
+        "show",
+        "display",
+        "compare",
+        "vs",
+        "trend",
+        "draw",
+      ];
+      if (bad.some((w) => lower.startsWith(w) || lower.includes(" " + w))) return false;
+      const letters = t.replace(/[^a-z]/gi, "").length;
+      return letters >= 2 && t.length <= 40;
+    };
+    if (atPrefix) {
+      company = atPrefix[1].trim();
+      question = atPrefix[2].trim();
+    } else if (genericPrefix && looksLikeCompany(genericPrefix[1])) {
+      company = genericPrefix[1].trim();
+      question = genericPrefix[2].trim();
     } else {
-      // Fallback: try to detect pattern "in <Company>, <question>"
       const inMatch = /\bin\s+([A-Za-z0-9 .&\-]{2,50})[, ]+(.+)/i.exec(body);
       if (inMatch) {
         company = inMatch[1].trim();
