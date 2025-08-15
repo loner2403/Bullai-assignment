@@ -106,13 +106,33 @@ function chartFromAnswerText(ans: string): ChartSpec | null {
   let m: RegExpExecArray | null;
   while ((m = labelRe.exec(text))) {
     const label = m[1].replace(/\s+/g, "").toUpperCase();
+    // Look ahead for number after the label (e.g., "FY21 0.90")
     const after = text.slice(m.index + m[0].length, m.index + m[0].length + 60);
-    const nm = numRe.exec(after);
-    if (nm) {
-      const raw = nm[1].replace(/,/g, "");
+    const nmAfter = numRe.exec(after);
+    if (nmAfter) {
+      const raw = nmAfter[1].replace(/,/g, "");
       const val = Number(raw);
       if (Number.isFinite(val)) {
-        const unit = (nm[2] || "").toLowerCase();
+        const unit = (nmAfter[2] || "").toLowerCase();
+        pairs.push({ label, value: val, unit: unit || undefined });
+        continue; // prefer forward match if present
+      }
+    }
+    // Look behind for number before the label (e.g., "0.90 FY21") within a small window
+    const beforeStart = Math.max(0, m.index - 60);
+    const before = text.slice(beforeStart, m.index);
+    // Search for the last number in this window
+    let lastMatch: RegExpExecArray | null = null;
+    let bm: RegExpExecArray | null;
+    const globalNum = new RegExp(numRe.source, "ig");
+    while ((bm = globalNum.exec(before))) {
+      lastMatch = bm;
+    }
+    if (lastMatch) {
+      const raw = lastMatch[1].replace(/,/g, "");
+      const val = Number(raw);
+      if (Number.isFinite(val)) {
+        const unit = (lastMatch[2] || "").toLowerCase();
         pairs.push({ label, value: val, unit: unit || undefined });
       }
     }
