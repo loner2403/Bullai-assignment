@@ -165,7 +165,7 @@ export async function POST(req: Request) {
     }
 
     // If chart intent, try a cheap synchronous chart and return media in the same TwiML (Vercel-safe)
-    let mediaUrls: string[] = [];
+    const mediaUrls: string[] = [];
     try {
       const wantsChart = /\b(chart|graph|plot|visuali[sz]e|trend|compare)\b/i.test(question);
       if (wantsChart) {
