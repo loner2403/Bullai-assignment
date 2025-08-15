@@ -274,7 +274,7 @@ async function getAnswerWithFallback(
 
 type SourceWithText = Source & { text: string };
 
-export async function getRAGAnswer(opts: { question: string; company?: string | null }): Promise<AnswerResponse> {
+export async function getRAGAnswer(opts: { question: string; company?: string | null; charts?: boolean }): Promise<AnswerResponse> {
   const question = opts.question.trim();
   const cfg = loadConfig();
 
@@ -434,7 +434,8 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
   }));
 
   let chartSpec: ChartSpec | null = null;
-  if (isChartIntent(question)) {
+  const chartsEnabled = opts.charts !== false;
+  if (chartsEnabled && isChartIntent(question)) {
     try {
       const chartProvider = (cfg.llmProviderChart || cfg.llmProvider) === "gemini" ? "gemini" : "deepseek";
       const chartModel = cfg.llmModelChart || cfg.llmModel;
@@ -458,16 +459,18 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
   }
 
   // Guard: if the textual answer itself indicates insufficient info, suppress any chart
-  try {
-    const a = (answer || "").toLowerCase();
-    const indicatesNoData = /cannot be answered|insufficient data|don't know|do not know|not available/.test(a);
-    if (indicatesNoData) {
-      chartSpec = null;
-    }
-  } catch {}
+  if (chartsEnabled) {
+    try {
+      const a = (answer || "").toLowerCase();
+      const indicatesNoData = /cannot be answered|insufficient data|don't know|do not know|not available/.test(a);
+      if (indicatesNoData) {
+        chartSpec = null;
+      }
+    } catch {}
+  }
 
   // Sanitize: drop periods where all series values are missing/invalid/zero; require >=2 remaining
-  if (chartSpec) {
+  if (chartsEnabled && chartSpec) {
     try {
       const keepIdx: number[] = [];
       for (let i = 0; i < chartSpec.labels.length; i++) {
@@ -487,7 +490,7 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
   }
 
   // Fallback: If no chart spec yet, attempt to parse the textual answer for period->value pairs
-  if (!chartSpec && isChartIntent(question)) {
+  if (chartsEnabled && !chartSpec && isChartIntent(question)) {
     try {
       const derived = chartFromAnswerText(answer);
       if (derived) {
@@ -496,7 +499,7 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
     } catch {}
   }
   // Fallback: As a last resort, parse from the question itself when user provides values directly
-  if (!chartSpec && isChartIntent(question)) {
+  if (chartsEnabled && !chartSpec && isChartIntent(question)) {
     try {
       const derivedQ = chartFromAnswerText(question);
       if (derivedQ) {

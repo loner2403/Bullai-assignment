@@ -144,7 +144,8 @@ export async function POST(req: Request) {
     let result: Awaited<ReturnType<typeof getRAGAnswer>> | null = null;
     try {
       result = await Promise.race([
-        getRAGAnswer({ question, company }),
+        // Fast text-only answer to avoid webhook timeout
+        getRAGAnswer({ question, company, charts: false }),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), TIMEOUT_MS)),
       ]);
     } catch (e) {
@@ -159,7 +160,33 @@ export async function POST(req: Request) {
       answer = answer.slice(0, maxLen - 20) + "\n… [truncated]";
     }
 
-    // Charts/media sending disabled: reply only with the textual answer from rag.ts
+    // If user asked for a chart/graph, generate it asynchronously and send as media via Twilio
+    try {
+      const wantsChart = /\b(chart|graph|plot|visuali[sz]e|trend|compare)\b/i.test(question);
+      const twilioFrom = process.env.TWILIO_WHATSAPP_NUMBER || toNum; // fallback to inbound To
+      if (wantsChart && from && twilioFrom && twilioFrom.startsWith("whatsapp:")) {
+        void (async () => {
+          try {
+            const rich = await getRAGAnswer({ question, company, charts: true });
+            if (rich?.chartSpec) {
+              const config = chartSpecToChartJs(rich.chartSpec as ChartSpec);
+              const url = await createQuickChartUrl({
+                ...config,
+                options: { ...config.options, layout: { padding: 8 } },
+              });
+              if (url) {
+                const shortBody = "Here is your chart";
+                await sendTwilioMessage({ to: from, from: twilioFrom, body: shortBody, mediaUrl: url });
+              }
+            }
+          } catch (e) {
+            console.warn("Async chart send failed", (e as any)?.message || e);
+          }
+        })();
+      }
+    } catch (e) {
+      console.warn("Chart intent background pipeline failed", (e as any)?.message || e);
+    }
 
     const xml = buildTwimlMessage(answer);
     return new Response(xml, { status: 200, headers: { "Content-Type": "application/xml" } });
