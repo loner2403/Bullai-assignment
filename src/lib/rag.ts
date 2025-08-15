@@ -294,7 +294,12 @@ async function getAnswerWithFallback(
 
 type SourceWithText = Source & { text: string };
 
-export async function getRAGAnswer(opts: { question: string; company?: string | null; charts?: boolean }): Promise<AnswerResponse> {
+export async function getRAGAnswer(opts: {
+  question: string;
+  company?: string | null;
+  charts?: boolean;
+  chartStrategy?: "cheap" | "full";
+}): Promise<AnswerResponse> {
   const question = opts.question.trim();
   const cfg = loadConfig();
 
@@ -455,7 +460,8 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
 
   let chartSpec: ChartSpec | null = null;
   const chartsEnabled = opts.charts !== false;
-  if (chartsEnabled && isChartIntent(question)) {
+  // If strategy is not explicitly cheap, allow LLM-based chart extraction
+  if (chartsEnabled && isChartIntent(question) && opts.chartStrategy !== "cheap") {
     try {
       const chartProvider = (cfg.llmProviderChart || cfg.llmProvider) === "gemini" ? "gemini" : "deepseek";
       const chartModel = cfg.llmModelChart || cfg.llmModel;
@@ -509,7 +515,7 @@ export async function getRAGAnswer(opts: { question: string; company?: string | 
     }
   }
 
-  // Fallback: If no chart spec yet, attempt to parse the textual answer for period->value pairs
+  // Fallback or "cheap" strategy: If no chart spec yet, attempt to parse the textual answer for period->value pairs
   if (chartsEnabled && !chartSpec && isChartIntent(question)) {
     try {
       const derived = chartFromAnswerText(answer);

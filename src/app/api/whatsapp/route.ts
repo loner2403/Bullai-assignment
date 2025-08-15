@@ -107,8 +107,8 @@ async function sendTwilioMessage(opts: { to: string; from: string; body?: string
   }
 }
 
-function buildTwimlMessage(text: string) {
-  // Basic TwiML response
+function buildTwimlMessage(text: string, mediaUrls?: string[]) {
+  // TwiML with optional media (WhatsApp-compatible)
   const xmlEscape = (s: string) =>
     s
       .replace(/&/g, "&amp;")
@@ -117,7 +117,11 @@ function buildTwimlMessage(text: string) {
       .replace(/\"/g, "&quot;")
       .replace(/'/g, "&apos;");
   const safe = xmlEscape((text || "").replace(/[\u0000-\u001F]/g, ""));
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Message>${safe}</Message></Response>`;
+  const media = (mediaUrls || [])
+    .filter(Boolean)
+    .map((u) => `<Media>${xmlEscape(u)}</Media>`) // Twilio allows multiple Media elements
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Message><Body>${safe}</Body>${media}</Message></Response>`;
 }
 
 export async function POST(req: Request) {
@@ -160,35 +164,30 @@ export async function POST(req: Request) {
       answer = answer.slice(0, maxLen - 20) + "\n… [truncated]";
     }
 
-    // If user asked for a chart/graph, generate it asynchronously and send as media via Twilio
+    // If chart intent, try a cheap synchronous chart and return media in the same TwiML (Vercel-safe)
+    let mediaUrls: string[] = [];
     try {
       const wantsChart = /\b(chart|graph|plot|visuali[sz]e|trend|compare)\b/i.test(question);
-      const twilioFrom = process.env.TWILIO_WHATSAPP_NUMBER || toNum; // fallback to inbound To
-      if (wantsChart && from && twilioFrom && twilioFrom.startsWith("whatsapp:")) {
-        void (async () => {
-          try {
-            const rich = await getRAGAnswer({ question, company, charts: true });
-            if (rich?.chartSpec) {
-              const config = chartSpecToChartJs(rich.chartSpec as ChartSpec);
-              const url = await createQuickChartUrl({
-                ...config,
-                options: { ...config.options, layout: { padding: 8 } },
-              });
-              if (url) {
-                const shortBody = "Here is your chart";
-                await sendTwilioMessage({ to: from, from: twilioFrom, body: shortBody, mediaUrl: url });
-              }
-            }
-          } catch (e) {
-            console.warn("Async chart send failed", (e as any)?.message || e);
-          }
-        })();
+      if (wantsChart) {
+        const CHEAP_TIMEOUT_MS = 6000; // stay well under webhook limit
+        const rich = (await Promise.race([
+          getRAGAnswer({ question, company, charts: true, chartStrategy: "cheap" }),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), CHEAP_TIMEOUT_MS)),
+        ])) as Awaited<ReturnType<typeof getRAGAnswer>> | null;
+        if (rich?.chartSpec) {
+          const config = chartSpecToChartJs(rich.chartSpec as ChartSpec);
+          const url = await createQuickChartUrl({
+            ...config,
+            options: { ...config.options, layout: { padding: 8 } },
+          });
+          if (url) mediaUrls.push(url);
+        }
       }
     } catch (e) {
-      console.warn("Chart intent background pipeline failed", (e as any)?.message || e);
+      console.warn("Synchronous cheap chart failed", (e as any)?.message || e);
     }
 
-    const xml = buildTwimlMessage(answer);
+    const xml = buildTwimlMessage(answer, mediaUrls);
     return new Response(xml, { status: 200, headers: { "Content-Type": "application/xml" } });
   } catch (e: any) {
     console.error("/api/whatsapp error", e);
