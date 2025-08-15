@@ -134,49 +134,9 @@ export async function POST(req: Request) {
       return new Response(xml, { status: 200, headers: { "Content-Type": "application/xml" } });
     }
 
-    // Optional: infer a company tag
-    // 1) Strict: "@Company: question"
-    // 2) Lenient: "Company: question" ONLY if the prefix doesn't look like chart verbs (plot/graph/chart/...)
-    // 3) Fallback: "... in <Company>, <question>"
-    let question = body;
-    let company: string | undefined = undefined;
-    const atPrefix = /^\s*@([^:\n]+):\s*(.+)$/i.exec(body);
-    const genericPrefix = !atPrefix ? /^\s*([^:\n]+):\s*(.+)$/i.exec(body) : null;
-    const looksLikeCompany = (s: string) => {
-      const t = (s || "").trim();
-      if (!t) return false;
-      const lower = t.toLowerCase();
-      const bad = [
-        "plot",
-        "graph",
-        "chart",
-        "visual",
-        "visualize",
-        "visualise",
-        "show",
-        "display",
-        "compare",
-        "vs",
-        "trend",
-        "draw",
-      ];
-      if (bad.some((w) => lower.startsWith(w) || lower.includes(" " + w))) return false;
-      const letters = t.replace(/[^a-z]/gi, "").length;
-      return letters >= 2 && t.length <= 40;
-    };
-    if (atPrefix) {
-      company = atPrefix[1].trim();
-      question = atPrefix[2].trim();
-    } else if (genericPrefix && looksLikeCompany(genericPrefix[1])) {
-      company = genericPrefix[1].trim();
-      question = genericPrefix[2].trim();
-    } else {
-      const inMatch = /\bin\s+([A-Za-z0-9 .&\-]{2,50})[, ]+(.+)/i.exec(body);
-      if (inMatch) {
-        company = inMatch[1].trim();
-        question = inMatch[2].trim();
-      }
-    }
+    // Use RAG directly: no company inference. Forward user's message as-is.
+    const question = body;
+    const company: string | undefined = undefined;
     console.log("WA inbound:", { from, body, company, question });
 
     // Call RAG core with a timeout safeguard to avoid Twilio webhook timeouts
@@ -191,7 +151,7 @@ export async function POST(req: Request) {
       console.warn("getRAGAnswer failed:", (e as any)?.message || e);
     }
 
-    let answer = result?.answer || "I'm thinking about that. If you don't get a detailed reply, try prefixing the company like '@POCL: <your question>' or rephrase.";
+    let answer = result?.answer || "I'm thinking about that. If you don't get a detailed reply, please rephrase your question and try again.";
 
     // Keep response concise for WhatsApp; truncate very long replies
     const maxLen = 2000; // keep under typical WA/Twilio limits
@@ -199,28 +159,7 @@ export async function POST(req: Request) {
       answer = answer.slice(0, maxLen - 20) + "\n… [truncated]";
     }
 
-    // Fire-and-forget: if we have a chartSpec and Twilio creds, render via QuickChart and send as media
-    try {
-      const twilioFrom = process.env.TWILIO_WHATSAPP_NUMBER || toNum; // fallback to inbound To
-      if (result?.chartSpec && from && twilioFrom && twilioFrom.startsWith("whatsapp:")) {
-        const config = chartSpecToChartJs(result.chartSpec as ChartSpec);
-        // limit size via QuickChart query params (defaults are fine for WA preview)
-        const url = await createQuickChartUrl({
-          ...config,
-          options: { ...config.options, layout: { padding: 8 } },
-        });
-        if (url) {
-          // Send media message with optional short body
-          const shortBody = company ? `Chart for ${company}` : `Your chart`;
-          // Don't block the HTTP response
-          void sendTwilioMessage({ to: from, from: twilioFrom, body: shortBody, mediaUrl: url }).catch((e) =>
-            console.warn("Twilio media send failed", (e as any)?.message || e)
-          );
-        }
-      }
-    } catch (e) {
-      console.warn("Chart media pipeline failed", (e as any)?.message || e);
-    }
+    // Charts/media sending disabled: reply only with the textual answer from rag.ts
 
     const xml = buildTwimlMessage(answer);
     return new Response(xml, { status: 200, headers: { "Content-Type": "application/xml" } });
