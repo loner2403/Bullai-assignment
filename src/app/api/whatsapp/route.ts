@@ -65,20 +65,49 @@ function chartSpecToChartJs(spec: ChartSpec) {
 }
 
 async function createQuickChartUrl(config: any): Promise<string | null> {
-  try {
-    const base = process.env.QUICKCHART_BASE_URL || "https://quickchart.io";
+  const base = process.env.QUICKCHART_BASE_URL || "https://quickchart.io";
+  const key = process.env.QUICKCHART_API_KEY;
+  const body = { chart: config, backgroundColor: "transparent", format: "png", ...(key ? { key } : {}) } as any;
+
+  const doPost = async () => {
     const resp = await fetch(`${base}/chart/create`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chart: config, backgroundColor: "transparent", format: "png" }),
+      body: JSON.stringify(body),
     });
-    const data = (await resp.json()) as any;
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`QuickChart create failed: ${resp.status} ${text.slice(0, 200)}`);
+    }
+    const data = (await resp.json().catch(() => ({}))) as any;
     if (data?.success && data?.url) return data.url as string;
-    return null;
+    throw new Error("QuickChart returned no url");
+  };
+
+  try {
+    return await doPost();
   } catch (e) {
-    console.warn("QuickChart error", (e as any)?.message || e);
-    return null;
+    console.warn("QuickChart create POST failed, retrying once:", (e as any)?.message || e);
+    try {
+      return await doPost();
+    } catch (e2) {
+      // Fallback: construct a GET rendering URL so Twilio can fetch the image directly
+      try {
+        const c = encodeURIComponent(JSON.stringify(config));
+        const qs = `c=${c}&format=png&backgroundColor=transparent${key ? `&key=${encodeURIComponent(key)}` : ""}`;
+        const url = `${base}/chart?${qs}`;
+        return url;
+      } catch (e3) {
+        console.warn("QuickChart fallback URL failed:", (e3 as any)?.message || e3);
+        return null;
+      }
+    }
   }
+}
+
+// Utility to timebox async operations
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return (await Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))])) as any;
 }
 
 async function sendTwilioMessage(opts: { to: string; from: string; body?: string; mediaUrl?: string }) {
@@ -143,18 +172,43 @@ export async function POST(req: Request) {
     const company: string | undefined = undefined;
     console.log("WA inbound:", { from, body, company, question });
 
-    // Call RAG core with a timeout safeguard to avoid Twilio webhook timeouts
-    const TIMEOUT_MS = Number(process.env.WHATSAPP_REPLY_TIMEOUT_MS || 12000);
-    let result: Awaited<ReturnType<typeof getRAGAnswer>> | null = null;
-    try {
-      result = await Promise.race([
-        // Fast text-only answer to avoid webhook timeout
-        getRAGAnswer({ question, company, charts: false }),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), TIMEOUT_MS)),
-      ]);
-    } catch (e) {
-      console.warn("getRAGAnswer failed:", (e as any)?.message || e);
-    }
+    // Decide early if user wants a chart
+    const wantsChart = /\b(chart|graph|plot|visuali[sz]e|trend|compare)\b/i.test(question);
+
+    // Time budgets: keep total < ~15s to satisfy Twilio webhook
+    const TIMEOUT_MS = Number(process.env.WHATSAPP_REPLY_TIMEOUT_MS || 9000);
+    const CHEAP_TIMEOUT_MS = Math.max(2500, Math.min(6000, Math.floor(TIMEOUT_MS * 0.6)));
+
+    // Kick off text answer and (optional) cheap chart concurrently
+    const answerPromise = withTimeout(
+      getRAGAnswer({ question, company, charts: false }),
+      TIMEOUT_MS
+    );
+
+    const chartPromise: Promise<string | null> = wantsChart
+      ? withTimeout(
+          (async () => {
+            const rich = await getRAGAnswer({ question, company, charts: true, chartStrategy: "cheap" });
+            if (!rich?.chartSpec) return null;
+            const config = chartSpecToChartJs(rich.chartSpec as ChartSpec);
+            // Keep QuickChart call within the same budget window
+            const url = await withTimeout(
+              createQuickChartUrl({
+                ...config,
+                options: { ...config.options, layout: { padding: 8 } },
+              }),
+              Math.max(1500, CHEAP_TIMEOUT_MS - 500)
+            );
+            return url;
+          })(),
+          CHEAP_TIMEOUT_MS
+        )
+      : Promise.resolve(null);
+
+    const [result, chartUrl] = (await Promise.all([answerPromise, chartPromise])) as [
+      Awaited<ReturnType<typeof getRAGAnswer>> | null,
+      string | null
+    ];
 
     let answer = result?.answer || "I'm thinking about that. If you don't get a detailed reply, please rephrase your question and try again.";
 
@@ -164,27 +218,13 @@ export async function POST(req: Request) {
       answer = answer.slice(0, maxLen - 20) + "\n… [truncated]";
     }
 
-    // If chart intent, try a cheap synchronous chart and return media in the same TwiML (Vercel-safe)
+    // Attach chart media if ready within budget
     const mediaUrls: string[] = [];
     try {
-      const wantsChart = /\b(chart|graph|plot|visuali[sz]e|trend|compare)\b/i.test(question);
-      if (wantsChart) {
-        const CHEAP_TIMEOUT_MS = 6000; // stay well under webhook limit
-        const rich = (await Promise.race([
-          getRAGAnswer({ question, company, charts: true, chartStrategy: "cheap" }),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), CHEAP_TIMEOUT_MS)),
-        ])) as Awaited<ReturnType<typeof getRAGAnswer>> | null;
-        if (rich?.chartSpec) {
-          const config = chartSpecToChartJs(rich.chartSpec as ChartSpec);
-          const url = await createQuickChartUrl({
-            ...config,
-            options: { ...config.options, layout: { padding: 8 } },
-          });
-          if (url) mediaUrls.push(url);
-        }
-      }
+      if (chartUrl) mediaUrls.push(chartUrl);
+      else if (wantsChart) console.info("Chart not included (timed out or unavailable)");
     } catch (e) {
-      console.warn("Synchronous cheap chart failed", (e as any)?.message || e);
+      console.warn("Chart attach failed", (e as any)?.message || e);
     }
 
     const xml = buildTwimlMessage(answer, mediaUrls);
